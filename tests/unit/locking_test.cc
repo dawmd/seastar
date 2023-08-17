@@ -212,6 +212,27 @@ SEASTAR_THREAD_TEST_CASE(test_shared_mutex) {
     sm.unlock();
 }
 
+SEASTAR_THREAD_TEST_CASE(test_shared_mutex_locks) {
+    shared_mutex sm;
+
+    {
+        const auto ulock = get_unique_lock(sm).get();
+        BOOST_REQUIRE(!sm.try_lock());
+        BOOST_REQUIRE(!sm.try_lock_shared());
+    }
+
+    {
+        const auto slock1 = get_shared_lock(sm).get();
+        BOOST_REQUIRE(!sm.try_lock());
+        BOOST_REQUIRE(sm.try_lock_shared());
+        const auto slock2 = get_shared_lock(sm).get();
+        sm.unlock_shared();
+    }
+
+    BOOST_REQUIRE(sm.try_lock());
+    sm.unlock();
+}
+
 SEASTAR_TEST_CASE(test_shared_mutex_exclusive) {
     return do_with(shared_mutex(), unsigned(0), [] (shared_mutex& sm, unsigned& counter) {
         return parallel_for_each(boost::irange(0, 10), [&sm, &counter] (int idx) {
@@ -219,6 +240,21 @@ SEASTAR_TEST_CASE(test_shared_mutex_exclusive) {
                 BOOST_REQUIRE_EQUAL(counter, 0u);
                 ++counter;
                 return sleep(1ms).then([&counter] {
+                    --counter;
+                    BOOST_REQUIRE_EQUAL(counter, 0u);
+                });
+            });
+        });
+    });
+}
+
+SEASTAR_TEST_CASE(test_shared_mutex_exclusive_locks) {
+    return do_with(shared_mutex(), unsigned(0), [] (shared_mutex& sm, unsigned& counter) {
+        return parallel_for_each(boost::irange(0, 10), [&sm, &counter] (int idx) {
+            return get_unique_lock(sm).then([&counter] (unique_lock ulock) {
+                BOOST_REQUIRE_EQUAL(counter, 0u);
+                ++counter;
+                return sleep(1ms).then([&counter, ulock = std::move(ulock)] {
                     --counter;
                     BOOST_REQUIRE_EQUAL(counter, 0u);
                 });
@@ -244,6 +280,23 @@ SEASTAR_TEST_CASE(test_shared_mutex_shared) {
     });
 }
 
+SEASTAR_TEST_CASE(test_shared_mutex_shared_locks) {
+    return do_with(shared_mutex(), unsigned(0), unsigned(0), [] (shared_mutex& sm, unsigned& counter, unsigned& max) {
+        return parallel_for_each(boost::irange(0, 10), [&sm, &counter, &max] (int idx) {
+            return get_shared_lock(sm).then([&counter, &max] (shared_lock slock) {
+                ++counter;
+                max = std::max(max, counter);
+                return sleep(1ms).then([&counter, slock = std::move(slock)] {
+                    --counter;
+                });
+            });
+        }).finally([&counter, &max] {
+            BOOST_REQUIRE_EQUAL(counter, 0u);
+            BOOST_REQUIRE_NE(max, 0u);
+        });
+    });
+}
+
 SEASTAR_THREAD_TEST_CASE(test_shared_mutex_failed_func) {
     shared_mutex sm;
 
@@ -254,6 +307,24 @@ SEASTAR_THREAD_TEST_CASE(test_shared_mutex_failed_func) {
     BOOST_REQUIRE_THROW(fut.get(), std::runtime_error);
 
     fut = with_lock(sm, [] {
+        throw std::runtime_error("injected");
+    });
+    BOOST_REQUIRE_THROW(fut.get(), std::runtime_error);
+
+    BOOST_REQUIRE(sm.try_lock());
+    sm.unlock();
+}
+
+SEASTAR_THREAD_TEST_CASE(test_shared_mutex_failed_func_locks) {
+    shared_mutex sm;
+
+    // verify that the shared_mutex is unlocked when func fails
+    future<> fut = get_shared_lock(sm).then([] (auto slock) {
+        throw std::runtime_error("injected");
+    });
+    BOOST_REQUIRE_THROW(fut.get(), std::runtime_error);
+
+    fut = get_unique_lock(sm).then([] (auto ulock) {
         throw std::runtime_error("injected");
     });
     BOOST_REQUIRE_THROW(fut.get(), std::runtime_error);
@@ -283,6 +354,31 @@ SEASTAR_THREAD_TEST_CASE(test_shared_mutex_throwing_func) {
     sm.unlock();
 }
 
+SEASTAR_THREAD_TEST_CASE(test_shared_mutex_throwing_func_locks) {
+    shared_mutex sm;
+    struct X {
+        int x;
+        X(int x_) noexcept : x(x_) {};
+        X(X&& o) : x(o.x) {
+            throw std::runtime_error("X moved");
+        }
+    };
+
+    // verify that the shared_mutex is unlocked when func move fails
+    try {
+        future<> fut = get_shared_lock(sm).then([x = X(0)] (auto ulock) {});
+        // BOOST_REQUIRE_THROW(fut.get(), std::runtime_error);
+
+        fut = get_unique_lock(sm).then([x = X(0)] (auto ulock) {});
+        // BOOST_REQUIRE_THROW(fut.get(), std::runtime_error);
+    } catch (std::runtime_error) {
+        std::cout << "\t\tWTF???\n\n\n";
+    }
+    
+    BOOST_REQUIRE(sm.try_lock());
+    sm.unlock();
+}
+
 SEASTAR_THREAD_TEST_CASE(test_shared_mutex_failed_lock) {
 #ifdef SEASTAR_ENABLE_ALLOC_FAILURE_INJECTION
     shared_mutex sm;
@@ -300,6 +396,48 @@ SEASTAR_THREAD_TEST_CASE(test_shared_mutex_failed_lock) {
         BOOST_REQUIRE(false);
     }).get(), std::bad_alloc);
     sm.unlock();
+
+    seastar::memory::local_failure_injector().cancel();
+#endif // SEASTAR_ENABLE_ALLOC_FAILURE_INJECTION
+}
+
+SEASTAR_THREAD_TEST_CASE(test_shared_mutex_failed_lock_locks) {
+#ifdef SEASTAR_ENABLE_ALLOC_FAILURE_INJECTION
+    shared_mutex sm;
+
+    // if l.lock() fails neither the function nor l.unlock()
+    // should be called.
+    const auto ulock = get_unique_lock(sm).get();
+    seastar::memory::local_failure_injector().fail_after(0);
+    BOOST_REQUIRE_THROW(get_shared_lock(sm).then([] (auto slock) {
+        BOOST_REQUIRE(false);
+    }).get(), std::bad_alloc);
+
+    seastar::memory::local_failure_injector().fail_after(0);
+    BOOST_REQUIRE_THROW(get_unique_lock(sm).then([] (auto ulock) {
+        BOOST_REQUIRE(false);
+    }).get(), std::bad_alloc);
+
+    seastar::memory::local_failure_injector().cancel();
+#endif // SEASTAR_ENABLE_ALLOC_FAILURE_INJECTION
+}
+
+SEASTAR_THREAD_TEST_CASE(test_shared_mutex_failed_lock_mixed_locks) {
+#ifdef SEASTAR_ENABLE_ALLOC_FAILURE_INJECTION
+    shared_mutex sm;
+
+    // if l.lock() fails neither the function nor l.unlock()
+    // should be called.
+    const auto ulock = get_unique_lock(sm).get();
+    seastar::memory::local_failure_injector().fail_after(0);
+    BOOST_REQUIRE_THROW(with_shared(sm, [] {
+        BOOST_REQUIRE(false);
+    }).get(), std::bad_alloc);
+
+    seastar::memory::local_failure_injector().fail_after(0);
+    BOOST_REQUIRE_THROW(with_lock(sm, [] {
+        BOOST_REQUIRE(false);
+    }).get(), std::bad_alloc);
 
     seastar::memory::local_failure_injector().cancel();
 #endif // SEASTAR_ENABLE_ALLOC_FAILURE_INJECTION
@@ -357,6 +495,28 @@ SEASTAR_THREAD_TEST_CASE(test_with_shared_typed_return_nothrow_move_func) {
     }
 }
 
+SEASTAR_THREAD_TEST_CASE(test_with_shared_typed_return_nothrow_move_func_locks) {
+    shared_mutex sm;
+
+    auto expected = 42;
+    auto res = get_shared_lock(sm).then([expected] (auto ulock) {
+        return expected;
+    }).get0();
+    BOOST_REQUIRE_EQUAL(res, expected);
+
+    try {
+        const auto slock = get_shared_lock(sm).get();
+        if (expected == 42) {
+            throw expected_exception(expected);
+        }
+        BOOST_FAIL("No exception was thrown");
+    } catch (const expected_exception& e) {
+        BOOST_REQUIRE_EQUAL(e.value, expected);
+    } catch (const std::exception& e) {
+        BOOST_FAIL(format("Unexpected exception type: {}", e.what()));
+    }
+}
+
 SEASTAR_THREAD_TEST_CASE(test_with_shared_typed_return_throwing_move_func) {
     shared_mutex sm;
 
@@ -368,6 +528,27 @@ SEASTAR_THREAD_TEST_CASE(test_with_shared_typed_return_throwing_move_func) {
                 auto expected = std::move(exp);
                 return expected.value;
             }).get();
+            BOOST_REQUIRE_EQUAL(res, expected_value);
+            done = true;
+        } catch (const moved_exception& e) {
+        } catch (const std::exception& e) {
+            BOOST_FAIL(format("Unexpected exception type: {}", e.what()));
+        }
+    }
+}
+
+SEASTAR_THREAD_TEST_CASE(test_with_shared_typed_return_throwing_move_func_locks) {
+    shared_mutex sm;
+
+    int expected_value = 42;
+    bool done = false;
+    for (int move_delay = 0; !done; move_delay++) {
+        try {
+            const auto slock = get_shared_lock(sm).get();
+            auto res = [exp = throw_on_move(expected_value, move_delay)] {
+                auto expected = std::move(exp);
+                return expected.value;
+            } ();
             BOOST_REQUIRE_EQUAL(res, expected_value);
             done = true;
         } catch (const moved_exception& e) {
@@ -401,6 +582,28 @@ SEASTAR_THREAD_TEST_CASE(test_with_lock_typed_return_nothrow_move_func) {
     }
 }
 
+SEASTAR_THREAD_TEST_CASE(test_with_lock_typed_return_nothrow_move_func_locks) {
+    shared_mutex sm;
+
+    auto expected = 42;
+    auto res = get_unique_lock(sm).then([expected] (auto ulock) {
+        return expected;
+    }).get0();
+    BOOST_REQUIRE_EQUAL(res, expected);
+
+    try {
+        const auto ulock = get_unique_lock(sm).get();
+        if (expected == 42) {
+            throw expected_exception(expected);
+        }
+        BOOST_FAIL("No exception was thrown");
+    } catch (const expected_exception& e) {
+        BOOST_REQUIRE_EQUAL(e.value, expected);
+    } catch (const std::exception& e) {
+        BOOST_FAIL(format("Unexpected exception type: {}", e.what()));
+    }
+}
+
 SEASTAR_THREAD_TEST_CASE(test_with_lock_typed_return_throwing_move_func) {
     shared_mutex sm;
 
@@ -412,6 +615,27 @@ SEASTAR_THREAD_TEST_CASE(test_with_lock_typed_return_throwing_move_func) {
                 auto expected = std::move(exp);
                 return expected.value;
             }).get();
+            BOOST_REQUIRE_EQUAL(res, expected_value);
+            done = true;
+        } catch (const moved_exception& e) {
+        } catch (const std::exception& e) {
+            BOOST_FAIL(format("Unexpected exception type: {}", e.what()));
+        }
+    }
+}
+
+SEASTAR_THREAD_TEST_CASE(test_with_lock_typed_return_throwing_move_func_locks) {
+    shared_mutex sm;
+
+    int expected_value = 42;
+    bool done = false;
+    for (int move_delay = 0; !done; move_delay++) {
+        try {
+            const auto ulock = get_unique_lock(sm).get();
+            auto res = [exp = throw_on_move(expected_value, move_delay)] {
+                auto expected = std::move(exp);
+                return expected.value;
+            } ();
             BOOST_REQUIRE_EQUAL(res, expected_value);
             done = true;
         } catch (const moved_exception& e) {

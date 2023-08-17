@@ -300,7 +300,10 @@ public:
 
     ~shared_lock() noexcept {
         if (_mutex) {
+            std::cerr << "\t\tShared unlocked\n";
             _mutex->unlock_shared();
+        } else {
+            std::cerr << "\t\tShared skipped\n";
         }
     }
 };
@@ -315,6 +318,7 @@ public:
 /// alive at least until the returned \ref shared_lock is destroyed.
 inline future<shared_lock> get_shared_lock(shared_mutex& mutex) noexcept {
     return mutex.lock_shared().then([&mutex] {
+        std::cerr << "\tSHARED LOCKED\n";
         return make_ready_future<shared_lock>(shared_lock{mutex});
     });
 }
@@ -361,7 +365,10 @@ public:
 
     ~unique_lock() noexcept {
         if (_mutex) {
+            std::cerr << "\t\tUniquely unlocked\n";
             _mutex->unlock();
+        } else {
+            std::cerr << "\t\tUniquely skipped\n";
         }
     }
 };
@@ -376,6 +383,7 @@ public:
 /// alive at least until the returned \ref unique_lock is destroyed.
 inline future<unique_lock> get_unique_lock(shared_mutex& mutex) noexcept {
     return mutex.lock().then([&mutex] {
+        std::cerr << "\tUNIQUELY LOCKED\n";
         return make_ready_future<unique_lock>(unique_lock{mutex});
     });
 }
