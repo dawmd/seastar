@@ -258,6 +258,128 @@ with_lock(shared_mutex& sm, Func&& func) noexcept {
     }
 }
 
+
+/// \brief RAII-based shared lock for a \ref shared_mutex object.
+///
+/// As soon as the destructor of an object of this class is called,
+/// the corresponding \ref shared_mutex is unlocked.
+///
+/// The class is effectively a safe way to keep a \ref shared_mutex
+/// locked and to unconditionally release it because no matter what
+/// happens, the destructor should eventually be called.
+///
+/// The corresponding \ref shared_mutex object MUST be kept alive
+/// throughout the lifetime of this object.
+///
+/// The class is NOT responsible for shared locking a \ref shared_mutex.
+/// \see get_shared_lock(shared_mutex&)
+/// \see unique_lock
+class shared_lock {
+private:
+    shared_mutex* _mutex;
+
+public:
+    friend future<shared_lock> get_shared_lock(shared_mutex& mutex) noexcept;
+
+private:
+    shared_lock(shared_mutex& mutex) noexcept : _mutex{std::addressof(mutex)} {}
+public:
+    shared_lock(shared_lock&& other) noexcept
+        : _mutex{std::exchange(other._mutex, nullptr)}
+    {}
+    shared_lock& operator=(shared_lock&& other) noexcept {
+        if (this != std::addressof(other)) {
+            this->~shared_lock();
+            new (this) shared_lock{std::move(other)};
+        }
+        return *this;
+    }
+
+    shared_lock(const shared_lock&) = delete;
+    shared_lock& operator=(const shared_lock&) = delete;
+
+    ~shared_lock() noexcept {
+        if (_mutex) {
+            _mutex->unlock_shared();
+        }
+    }
+};
+
+/// \brief Construct a RAII-based shared lock corresponding to a given \ref shared_mutex object.
+///
+/// Since constructors cannot be exectued asynchronously, use this function
+/// to shared lock a \ref shared_mutex and construct a corresponding
+/// \ref unique_lock object that will unlock it later when it is being destructed.
+///
+/// The caller is responsible for keeping the corresponding \ref shared_mutex object
+/// alive at least until the returned \ref shared_lock is destroyed.
+inline future<shared_lock> get_shared_lock(shared_mutex& mutex) noexcept {
+    return mutex.lock_shared().then([&mutex] {
+        return make_ready_future<shared_lock>(shared_lock{mutex});
+    });
+}
+
+
+/// \brief RAII-based lock for a \ref shared_mutex object.
+///
+/// As soon as the destructor of an object of this class is called,
+/// the corresponding \ref shared_mutex is unlocked.
+///
+/// The class is effectively a safe way to keep a \ref shared_mutex
+/// locked and to unconditionally release it because no matter what
+/// happens, the destructor should eventually be called.
+///
+/// The corresponding \ref shared_mutex object MUST be kept alive
+/// throughout the lifetime of this object.
+///
+/// The class is NOT responsible for locking a \ref shared_mutex.
+/// \see get_unique_lock(shared_mutex&)
+/// \see shared_lock
+class unique_lock {
+private:
+    shared_mutex* _mutex;
+
+public:
+    friend future<unique_lock> get_unique_lock(shared_mutex& mutex) noexcept;
+
+private:
+    unique_lock(shared_mutex& mutex) noexcept : _mutex{std::addressof(mutex)} {}
+public:
+    unique_lock(unique_lock&& other) noexcept
+        : _mutex{std::exchange(other._mutex, nullptr)}
+    {}
+    unique_lock& operator=(unique_lock&& other) noexcept {
+        if (this != std::addressof(other)) {
+            this->~unique_lock();
+            new (this) unique_lock{std::move(other)};
+        }
+        return *this;
+    }
+
+    unique_lock(const unique_lock&) = delete;
+    unique_lock& operator=(const unique_lock&) = delete;
+
+    ~unique_lock() noexcept {
+        if (_mutex) {
+            _mutex->unlock();
+        }
+    }
+};
+
+/// \brief Construct a RAII-based lock corresponding to a given \ref shared_mutex object.
+///
+/// Since constructors cannot be exectued asynchronously, use this function
+/// to lock a \ref shared_mutex and construct a corresponding \ref unique_lock object
+/// that will unlock it later when it is being destructed.
+///
+/// The caller is responsible for keeping the corresponding \ref shared_mutex object
+/// alive at least until the returned \ref unique_lock is destroyed.
+inline future<unique_lock> get_unique_lock(shared_mutex& mutex) noexcept {
+    return mutex.lock().then([&mutex] {
+        return make_ready_future<unique_lock>(unique_lock{mutex});
+    });
+}
+
 /// @}
 SEASTAR_MODULE_EXPORT_END
 
