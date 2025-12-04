@@ -1144,10 +1144,12 @@ if (Seastar_INSTALL OR Seastar_TESTING)
     include/seastar/testing/test_case.hh
     include/seastar/testing/test_runner.hh
     include/seastar/testing/thread_test_case.hh
+    include/seastar/testing/test_tree_lister.hh
     src/testing/entry_point.cc
     src/testing/random.cc
     src/testing/seastar_test.cc
-    src/testing/test_runner.cc)
+    src/testing/test_runner.cc
+    src/testing/test_tree_lister.cc)
 
   add_library (Seastar::seastar_testing ALIAS seastar_testing)
 

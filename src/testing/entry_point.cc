@@ -25,6 +25,10 @@
 #include <seastar/testing/seastar_test.hh>
 #include <seastar/testing/test_runner.hh>
 
+#include <boost/test/tree/visitor.hpp>
+#include <boost/test/tree/traverse.hpp>
+#include <seastar/testing/test_tree_lister.hh>
+
 namespace seastar {
 
 namespace testing {
@@ -46,6 +50,16 @@ static void install_dummy_handler(int sig) {
 }
 
 int entry_point(int argc, char** argv) {
+    boost::unit_test::framework::init(&init_unit_test_suite, argc, argv);
+    boost::unit_test::framework::finalize_setup_phase();
+    test_tree_lister reporter;
+
+    boost::unit_test::traverse_test_tree(boost::unit_test::framework::master_test_suite().p_id, reporter, true);
+
+    fmt::println("{}", reporter.get_result());
+
+    return 0;
+
 #ifndef SEASTAR_ASAN_ENABLED
     // Before we call into boost, install some dummy signal
     // handlers. This seems to be the only way to stop boost from
